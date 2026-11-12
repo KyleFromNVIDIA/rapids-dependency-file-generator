@@ -36,6 +36,9 @@ class Output(Enum):
     CONSTRAINTS = "constraints"
     """Generate a ``constraints.txt``."""
 
+    CONDA_RECIPE_V1 = "conda-recipe-v1"
+    """Modify a Rattler v1 ``recipe.yaml``."""
+
     CONDA = "conda"
     """Generate a Conda environment file."""
 
@@ -44,11 +47,26 @@ class Output(Enum):
 class FileExtras:
     """The ``extras`` field of a file key in ``dependencies.yaml``."""
 
-    table: str
+    table: typing.Union[str, None] = None
     """The ``table`` field."""
 
     key: typing.Union[str, None] = None
     """The ``key`` field."""
+
+    output_type: typing.Union[str, None] = None
+    """Recipe target: requirements, package, or staging."""
+
+    package_name: typing.Union[str, None] = None
+    """Name of the package output to modify."""
+
+    staging_name: typing.Union[str, None] = None
+    """Name of the staging output to modify."""
+
+    requirements_type: typing.Union[str, None] = None
+    """Dot-separated path to a recipe dependency list."""
+
+    test_index: typing.Union[int, None] = None
+    """Zero-based index of a recipe test."""
 
 
 @dataclass
@@ -79,6 +97,9 @@ class File:
     pyproject_dir: Path = Path(_constants.default_pyproject_dir)
     """The directory in which to write ``pyproject.toml``."""
 
+    recipe_dir: typing.Union[Path, None] = None
+    """Directory containing the existing ``recipe.yaml``."""
+
 
 @dataclass
 class PipRequirements:
@@ -95,7 +116,7 @@ class CommonDependencies:
     output_types: set[Output]
     """The set of output types for this entry."""
 
-    packages: list[typing.Union[str, PipRequirements]]
+    packages: list[typing.Union[str, PipRequirements, dict[str, typing.Any]]]
     """The list of packages for this entry."""
 
 
@@ -106,7 +127,7 @@ class MatrixMatcher:
     matrix: dict[str, str]
     """The set of matrix values to match."""
 
-    packages: list[typing.Union[str, PipRequirements]]
+    packages: list[typing.Union[str, PipRequirements, dict[str, typing.Any]]]
     """The list of packages for this entry."""
 
 
@@ -157,10 +178,15 @@ def _parse_outputs(outputs: typing.Union[str, list[str]]) -> set[Output]:
     return {Output(o) for o in outputs}
 
 
-def _parse_extras(extras: dict[str, str]) -> FileExtras:
+def _parse_extras(extras: dict[str, typing.Any]) -> FileExtras:
     return FileExtras(
-        table=extras["table"],
+        table=extras.get("table") if "output_type" in extras else extras["table"],
         key=extras.get("key", None),
+        output_type=extras.get("output_type"),
+        package_name=extras.get("package_name"),
+        staging_name=extras.get("staging_name"),
+        requirements_type=extras.get("requirements_type"),
+        test_index=extras.get("test_index"),
     )
 
 
@@ -182,11 +208,17 @@ def _parse_file(file_config: dict[str, typing.Any]) -> File:
         constraints_dir=Path(file_config.get("constraints_dir", _constants.default_constraints_dir)),
         conda_dir=Path(file_config.get("conda_dir", _constants.default_conda_dir)),
         pyproject_dir=Path(file_config.get("pyproject_dir", _constants.default_pyproject_dir)),
+        recipe_dir=Path(file_config["recipe_dir"]) if "recipe_dir" in file_config else None,
     )
 
 
-def _parse_requirement(requirement: typing.Union[str, dict[str, list[str]]]) -> typing.Union[str, PipRequirements]:
+def _parse_requirement(
+    requirement: typing.Union[str, dict[str, typing.Any]],
+) -> typing.Union[str, PipRequirements, dict[str, typing.Any]]:
     if isinstance(requirement, str):
+        return requirement
+
+    if "if" in requirement:
         return requirement
 
     return PipRequirements(pip=requirement["pip"])

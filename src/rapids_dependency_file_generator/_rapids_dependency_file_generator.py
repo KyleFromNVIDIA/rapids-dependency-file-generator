@@ -11,6 +11,7 @@ import yaml
 
 from . import _config
 from ._constants import cli_name
+from ._recipe import read_recipe, update_recipe
 
 __all__ = [
     "make_dependency_files",
@@ -31,7 +32,7 @@ def delete_existing_files(root: str) -> None:
         The path (relative or absolute) to the root of the directory tree to search for files to delete.
     """
     for dirpath, _, filenames in os.walk(root):
-        for fn in filter(lambda fn: fn.endswith(".txt") or fn.endswith(".yaml"), filenames):
+        for fn in filter(lambda fn: fn.endswith(".txt") or (fn.endswith(".yaml") and fn != "recipe.yaml"), filenames):
             with open(file_path := os.path.join(dirpath, fn)) as f:
                 try:
                     if HEADER in f.read():
@@ -41,8 +42,8 @@ def delete_existing_files(root: str) -> None:
 
 
 def dedupe(
-    dependencies: list[typing.Union[str, _config.PipRequirements]],
-) -> typing.Sequence[typing.Union[str, dict[str, list[str]]]]:
+    dependencies: list[typing.Union[str, _config.PipRequirements, dict[str, typing.Any]]],
+) -> typing.Sequence[typing.Union[str, dict[str, typing.Any]]]:
     """Generate the unique set of dependencies contained in a dependency list.
 
     Parameters
@@ -52,21 +53,24 @@ def dedupe(
 
     Returns
     -------
-    Sequence[str | dict[str, list[str]]]
+    Sequence[str | dict[str, typing.Any]]
         The ``dependencies`` with all duplicates removed.
     """
     string_deps: set[str] = set()
     pip_deps: set[str] = set()
+    conditional_deps = []
     for dep in dependencies:
         if isinstance(dep, str):
             string_deps.add(dep)
         elif isinstance(dep, _config.PipRequirements):
             pip_deps.update(dep.pip)
+        elif isinstance(dep, dict):
+            conditional_deps.append(dep)
 
     if pip_deps:
-        return [*sorted(string_deps), {"pip": sorted(pip_deps)}]
+        return [*sorted(string_deps), *conditional_deps, {"pip": sorted(pip_deps)}]
     else:
-        return sorted(string_deps)
+        return [*sorted(string_deps), *conditional_deps]
 
 
 def grid(gridspec: dict[str, list[str]]) -> Generator[dict[str, str], None, None]:
@@ -101,7 +105,7 @@ def make_dependency_file(
     config_file: os.PathLike,
     output_dir: os.PathLike,
     conda_channels: list[str],
-    dependencies: typing.Sequence[typing.Union[str, dict[str, list[str]]]],
+    dependencies: typing.Sequence[typing.Union[str, dict[str, typing.Any]]],
     extras: typing.Union[_config.FileExtras, None],
 ) -> str:
     """Generate the contents of the dependency file.
@@ -124,7 +128,7 @@ def make_dependency_file(
     conda_channels : list[str]
         The channels to include in the file. Only used when ``file_type`` is
         CONDA.
-    dependencies : Sequence[str | dict[str, list[str]]]
+    dependencies : Sequence[str | dict[str, typing.Any]]
         The dependencies to include in the file.
     extras : FileExtras | None
         Any extra information provided for generating this dependency file.
@@ -155,8 +159,16 @@ def make_dependency_file(
                 raise ValueError(f"Map inputs like {dep} are not allowed for the '{file_type.value}' file type.")
 
             file_contents += f"{dep}\n"
-    elif file_type == _config.Output.PYPROJECT:
+    elif file_type == _config.Output.CONDA_RECIPE_V1:
         if extras is None:
+            raise ValueError("The 'extras' field must be provided for the 'conda-recipe-v1' file type.")
+        if any(isinstance(dep, dict) and "pip" in dep for dep in dependencies):
+            raise ValueError("Pip entries are not supported for 'conda-recipe-v1'.")
+        file_contents = update_recipe(
+            read_recipe(output_dir, file_name), dependencies, extras, relative_path_to_config_file
+        )
+    elif file_type == _config.Output.PYPROJECT:
+        if extras is None or extras.table is None:
             raise ValueError("The 'extras' field must be provided for the 'pyproject' file type.")
 
         if extras.table == "build-system":
@@ -252,6 +264,8 @@ def get_filename(file_type: _config.Output, file_key: str, matrix_combo: dict[st
     elif file_type == _config.Output.CONSTRAINTS:
         file_ext = ".txt"
         file_type_prefix = "constraints"
+    elif file_type == _config.Output.CONDA_RECIPE_V1:
+        return "recipe.yaml"
     elif file_type == _config.Output.PYPROJECT:
         file_ext = ".toml"
         # Unlike for files like requirements.txt or conda environment YAML files, which
@@ -292,6 +306,10 @@ def get_output_dir(*, file_type: _config.Output, config_file_path: os.PathLike, 
         path.append(file_config.requirements_dir)
     elif file_type == _config.Output.CONSTRAINTS:
         path.append(file_config.constraints_dir)
+    elif file_type == _config.Output.CONDA_RECIPE_V1:
+        if file_config.recipe_dir is None:
+            raise ValueError("The 'recipe_dir' field is required for 'conda-recipe-v1' output.")
+        path.append(file_config.recipe_dir)
     elif file_type == _config.Output.PYPROJECT:
         path.append(file_config.pyproject_dir)
     return os.path.join(*path)
@@ -338,7 +356,7 @@ class _DependencyCollection:
     # e.g. {"pip": ["dgl", "pyg"]}, used in conda envs
     dict_deps: dict[str, list[str]]
 
-    def update(self, deps: typing.Sequence[typing.Union[str, dict[str, list[str]]]]) -> None:
+    def update(self, deps: typing.Sequence[typing.Union[str, dict[str, typing.Any]]]) -> None:
         for dep in deps:
             if isinstance(dep, dict):
                 for k, v in dep.items():
@@ -351,7 +369,7 @@ class _DependencyCollection:
                 self.str_deps.add(dep)
 
     @property
-    def deps_list(self) -> typing.Sequence[typing.Union[str, dict[str, list[str]]]]:
+    def deps_list(self) -> typing.Sequence[typing.Union[str, dict[str, typing.Any]]]:
         if self.dict_deps:
             return [*sorted(self.str_deps), self.dict_deps]
 
@@ -398,9 +416,14 @@ def make_dependency_files(
         If the file is malformed. There are numerous different error cases
         which are described by the error messages.
     """
-    if to_stdout and len(file_keys) > 1 and output is not None and _config.Output.PYPROJECT in output:
+    in_place_outputs = {_config.Output.PYPROJECT, _config.Output.CONDA_RECIPE_V1}
+    requested_outputs = (
+        output if output is not None else set().union(*(parsed_config.files[key].output for key in file_keys))
+    )
+    if to_stdout and len(file_keys) > 1 and requested_outputs & in_place_outputs:
+        file_type = sorted(requested_outputs & in_place_outputs, key=lambda o: o.value)[0]
         raise ValueError(
-            f"Using --file-key multiple times together with '--output {_config.Output.PYPROJECT.value}' "
+            f"Using --file-key multiple times together with '--output {file_type.value}' "
             "when writing to stdout is not supported."
         )
 
@@ -419,8 +442,11 @@ def make_dependency_files(
         else:
             file_matrix = file_config.matrix
         calculated_grid = list(grid(file_matrix))
-        if _config.Output.PYPROJECT in file_types_to_generate and len(calculated_grid) > 1:
-            raise ValueError("Pyproject outputs can't have more than one matrix output")
+        if len(calculated_grid) > 1:
+            if _config.Output.PYPROJECT in file_types_to_generate:
+                raise ValueError("Pyproject outputs can't have more than one matrix output")
+            if _config.Output.CONDA_RECIPE_V1 in file_types_to_generate:
+                raise ValueError("Conda recipe outputs can't have more than one matrix output")
         for file_type in file_types_to_generate:
             for matrix_combo in calculated_grid:
                 dependencies = []

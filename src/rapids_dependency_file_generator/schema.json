@@ -1,4 +1,4 @@
- {
+{
     "$schema": "http://json-schema.org/draft-07/schema#",
     "$id": "https://raw.githubusercontent.com/rapidsai/dependency-file-generator/v1.22.0/src/rapids_dependency_file_generator/schema.json",
     "type": "object",
@@ -18,10 +18,145 @@
                         "requirements_dir": {"type": "string"},
                         "constraints_dir": {"type": "string"},
                         "conda_dir": {"type": "string"},
-                        "pyproject_dir": {"type": "string"}
+                        "pyproject_dir": {"type": "string"},
+                        "recipe_dir": {"type": "string"}
                     },
                     "additionalProperties": false,
-                    "required": ["output", "includes"]
+                    "required": ["output", "includes"],
+                    "allOf": [
+                        {
+                            "if": {
+                                "properties": {
+                                    "output": {
+                                        "anyOf": [
+                                            {
+                                                "const": "conda-recipe-v1"
+                                            },
+                                            {
+                                                "type": "array",
+                                                "contains": {
+                                                    "const": "conda-recipe-v1"
+                                                }
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            "then": {
+                                "required": [
+                                    "recipe_dir",
+                                    "extras"
+                                ],
+                                "properties": {
+                                    "extras": {
+                                        "allOf": [
+                                            {
+                                                "required": [
+                                                    "output_type",
+                                                    "requirements_type"
+                                                ]
+                                            },
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "output_type": {
+                                                            "const": "package"
+                                                        }
+                                                    }
+                                                },
+                                                "then": {
+                                                    "required": [
+                                                        "package_name"
+                                                    ]
+                                                },
+                                                "else": {
+                                                    "not": {
+                                                        "required": [
+                                                            "package_name"
+                                                        ]
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "if": {
+                                                    "properties": {
+                                                        "output_type": {
+                                                            "const": "staging"
+                                                        }
+                                                    }
+                                                },
+                                                "then": {
+                                                    "required": [
+                                                        "staging_name"
+                                                    ]
+                                                },
+                                                "else": {
+                                                    "not": {
+                                                        "required": [
+                                                            "staging_name"
+                                                        ]
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "if": {
+                                                    "required": [
+                                                        "test_index"
+                                                    ]
+                                                },
+                                                "then": {
+                                                    "properties": {
+                                                        "output_type": {
+                                                            "enum": [
+                                                                "requirements",
+                                                                "package"
+                                                            ]
+                                                        },
+                                                        "requirements_type": {
+                                                            "enum": [
+                                                                "build",
+                                                                "run"
+                                                            ]
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "if": {
+                                "properties": {
+                                    "output": {
+                                        "type": "array",
+                                        "allOf": [
+                                            {
+                                                "contains": {
+                                                    "const": "pyproject"
+                                                }
+                                            },
+                                            {
+                                                "contains": {
+                                                    "const": "conda-recipe-v1"
+                                                }
+                                            }
+                                        ]
+                                    }
+                                }
+                            },
+                            "then": {
+                                "properties": {
+                                    "extras": {
+                                        "required": [
+                                            "table"
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    ]
                 }
             },
             "minProperties": 1
@@ -41,7 +176,8 @@
                                     "packages": {"$ref": "#/$defs/packages"}
                                 },
                                 "required": ["output_types", "packages"],
-                                "additionalProperties": false
+                                "additionalProperties": false,
+                                "allOf": [{"$ref": "#/$defs/dependency-output-packages"}]
                             }
                         },
                         "specific": {
@@ -53,7 +189,8 @@
                                     "matrices": {"$ref": "#/$defs/matrices"}
                                 },
                                 "required": ["output_types", "matrices"],
-                                "additionalProperties": false
+                                "additionalProperties": false,
+                                "allOf": [{"$ref": "#/$defs/dependency-output-packages"}]
                             }
                         }
                     },
@@ -122,11 +259,11 @@
             "items": {"$ref": "#/$defs/matrix-matcher"}
         },
         "output-types": {
-            "enum": ["conda", "requirements", "constraints", "pyproject"]
+            "enum": ["conda", "requirements", "constraints", "pyproject", "conda-recipe-v1"]
         },
         "output-types-array": {
             "type": "array",
-            "item": {"$ref": "#/$defs/output-types"}
+            "items": {"$ref": "#/$defs/output-types"}
         },
         "outputs": {
             "oneOf": [
@@ -140,7 +277,8 @@
             "items": {
                 "oneOf": [
                     {"$ref": "#/$defs/requirement"},
-                    {"$ref": "#/$defs/pip-requirements"}
+                    {"$ref": "#/$defs/pip-requirements"},
+                    {"$ref": "#/$defs/recipe-conditional"}
                 ]
             }
         },
@@ -166,10 +304,198 @@
         "extras": {
             "type": "object",
             "properties": {
-                "table": { "type": "string", "required": true },
-                "key": {"type": "string", "required": false }
+                "table": {
+                    "type": "string"
+                },
+                "key": {
+                    "type": "string"
+                },
+                "output_type": {
+                    "enum": [
+                        "requirements",
+                        "package",
+                        "staging"
+                    ]
+                },
+                "package_name": {
+                    "type": "string"
+                },
+                "staging_name": {
+                    "type": "string"
+                },
+                "requirements_type": {
+                    "type": "string",
+                    "pattern": "^[^.]+(\\.[^.]+)*$"
+                },
+                "test_index": {
+                    "type": "integer",
+                    "minimum": 0
+                }
             },
             "additionalProperties": false
+        },
+        "recipe-conditional": {
+            "type": "object",
+            "properties": {
+                "if": {
+                    "type": "string"
+                },
+                "then": {
+                    "$ref": "#/$defs/recipe-branch"
+                },
+                "else": {
+                    "$ref": "#/$defs/recipe-branch"
+                }
+            },
+            "required": [
+                "if",
+                "then"
+            ],
+            "additionalProperties": false
+        },
+        "recipe-item": {
+            "oneOf": [
+                {
+                    "type": "string"
+                },
+                {
+                    "$ref": "#/$defs/recipe-conditional"
+                }
+            ]
+        },
+        "recipe-branch": {
+            "oneOf": [
+                {
+                    "$ref": "#/$defs/recipe-item"
+                },
+                {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/$defs/recipe-item"
+                    }
+                }
+            ]
+        },
+        "dependency-output-packages": {
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "output_types": {
+                                "enum": [
+                                    "conda-recipe-v1",
+                                    [
+                                        "conda-recipe-v1"
+                                    ]
+                                ]
+                            }
+                        }
+                    },
+                    "then": {
+                        "properties": {
+                            "packages": {
+                                "items": {
+                                    "$ref": "#/$defs/recipe-item"
+                                }
+                            },
+                            "matrices": {
+                                "items": {
+                                    "properties": {
+                                        "packages": {
+                                            "items": {
+                                                "$ref": "#/$defs/recipe-item"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "output_types": {
+                                "anyOf": [
+                                    {
+                                        "const": "conda-recipe-v1"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "contains": {
+                                            "const": "conda-recipe-v1"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "then": {
+                        "properties": {
+                            "packages": {
+                                "items": {
+                                    "not": {
+                                        "$ref": "#/$defs/pip-requirements"
+                                    }
+                                }
+                            },
+                            "matrices": {
+                                "items": {
+                                    "properties": {
+                                        "packages": {
+                                            "items": {
+                                                "not": {
+                                                    "$ref": "#/$defs/pip-requirements"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "if": {
+                        "not": {
+                            "properties": {
+                                "output_types": {
+                                    "enum": [
+                                        "conda-recipe-v1",
+                                        [
+                                            "conda-recipe-v1"
+                                        ]
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "then": {
+                        "properties": {
+                            "packages": {
+                                "items": {
+                                    "not": {
+                                        "$ref": "#/$defs/recipe-conditional"
+                                    }
+                                }
+                            },
+                            "matrices": {
+                                "items": {
+                                    "properties": {
+                                        "packages": {
+                                            "items": {
+                                                "not": {
+                                                    "$ref": "#/$defs/recipe-conditional"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
         }
     }
 }

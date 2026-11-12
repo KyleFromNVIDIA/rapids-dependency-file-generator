@@ -1,6 +1,6 @@
 # rapids-dependency-file-generator
 
-`rapids-dependency-file-generator` is a Python CLI tool that generates conda `environment.yaml` files and `requirements.txt` files from a single YAML file, typically named `dependencies.yaml`.
+`rapids-dependency-file-generator` is a Python CLI tool that generates conda environment, requirements, and constraints files, and updates `pyproject.toml` and Rattler `recipe.yaml` files from a single YAML file, typically named `dependencies.yaml`.
 
 When installed, it makes the `rapids-dependency-file-generator` CLI command available which is responsible for parsing a `dependencies.yaml` configuration file and generating the appropriate conda `environment.yaml` and `requirements.txt` dependency files.
 
@@ -40,7 +40,7 @@ Here is an example of what the `files` key might look like:
 ```yaml
 files:
   all: # used as the prefix for the generated dependency file names for conda or requirements files (has no effect on pyproject.toml files)
-    output: [conda, requirements, constraints] # which dependency file types to generate. required, can be "conda", "requirements", "constraints", "pyproject", "none" or a list of non-"none" values
+    output: [conda, requirements, constraints] # which dependency file types to generate. required, can be "conda", "requirements", "constraints", "pyproject", "conda-recipe-v1", "none" or a list of non-"none" values
     conda_dir: conda/environments # where to put conda environment.yaml files. optional, defaults to "conda/environments"
     requirements_dir: python/cudf # where to put requirements.txt files. optional, but recommended. defaults to "python"
     constraints_dir: python/cudf # where to put constraints.txt files. optional, but recommended. defaults to "python"
@@ -107,6 +107,64 @@ Currently the supported extras by file type are:
 - pyproject.toml
   - table: The table in pyproject.toml where the dependencies should be written. Acceptable values are "build-system", "project", and "project.optional-dependencies".
   - key: The key corresponding to the dependency list in `table`. This may only be provided for the "project.optional-dependencies" table since the key name is fixed for "build-system" ("requires") and "project" ("dependencies"). Note that this implicitly prohibits including optional dependencies via an inline table under the "project" table.
+
+#### Rattler recipes (`conda-recipe-v1`)
+
+Use `conda-recipe-v1` to replace a dependency list in an existing Rattler v1
+`recipe.yaml`. Other recipe contents, including comments and formatting, are
+preserved. For example:
+
+```yaml
+files:
+  recipe_build:
+    output: conda-recipe-v1
+    recipe_dir: conda/recipes/example
+    extras:
+      output_type: requirements
+      requirements_type: build
+    includes: [build]
+dependencies:
+  build:
+    common:
+      - output_types: conda-recipe-v1
+        packages:
+          - ${{ compiler("cxx") }} =14
+          - if: unix
+            then: make
+            else: ninja
+```
+
+`recipe_dir` is required and is relative to `dependencies.yaml`. The `extras`
+fields select the list to replace:
+
+| Field | Meaning |
+| --- | --- |
+| `output_type` | Required: `requirements` for root requirements or tests, `package` for a package output, or `staging` for a staging output. |
+| `package_name` | Required only for `package`. Matches exactly one existing `outputs` entry's `package.name`, before template expansion. |
+| `staging_name` | Required only for `staging`. Matches exactly one existing `outputs` entry's `staging.name`, before template expansion. |
+| `requirements_type` | Required: a path inside `requirements`, such as `build`, `run`, or `run_exports.strong`. Every path component must already exist. |
+| `test_index` | Optional zero-based index into the root or selected package's `tests`. The selected test must already contain `requirements.build` or `requirements.run`, as selected by `requirements_type`. Unsupported for staging outputs. |
+
+Outputs and tests inside conditionals cannot be selected. Names and test indices
+refer to the recipe before template expansion. The target list must be a block
+list or an empty inline list (`[]`), and its containing mapping must use block
+style. Generated nonempty lists use two additional spaces of indentation; empty
+lists use `[]`. A generation comment identifies the source configuration.
+
+Dependency entries exclusive to `conda-recipe-v1` can contain conditional
+mappings with a string `if`, a required `then`, and an optional `else`. Each
+branch can contain a package string, another conditional, or a list of either.
+Unconditional strings are sorted and deduplicated; conditional entries and their
+contents retain their order and duplicates. Jinja expressions are copied without
+expansion. `pip` mappings are unsupported. Entries shared with other output types
+must contain strings only.
+
+Multiple file keys can edit different lists in the same recipe. A single file
+key can generate both `pyproject` and `conda-recipe-v1` output by providing both
+sets of `extras` fields. Recipe outputs allow at most one matrix combination.
+When writing a recipe to stdout, only one file key can be selected. `--clean`
+leaves `recipe.yaml` files in place. Repeated generation preserves prior edits
+and produces the same result.
 
 ### `channels` Key
 
