@@ -173,11 +173,15 @@
                                 "type": "object",
                                 "properties": {
                                     "output_types": {"$ref": "#/$defs/outputs"},
+                                    "filters": {"$ref": "#/$defs/filters"},
                                     "packages": {"$ref": "#/$defs/packages"}
                                 },
                                 "required": ["output_types", "packages"],
                                 "additionalProperties": false,
-                                "allOf": [{"$ref": "#/$defs/dependency-output-packages"}]
+                                "allOf": [
+                                    {"$ref": "#/$defs/dependency-output-packages"},
+                                    {"$ref": "#/$defs/dependency-output-filters"}
+                                ]
                             }
                         },
                         "specific": {
@@ -186,11 +190,15 @@
                                 "type": "object",
                                 "properties": {
                                     "output_types": {"$ref": "#/$defs/outputs"},
+                                    "filters": {"$ref": "#/$defs/filters"},
                                     "matrices": {"$ref": "#/$defs/matrices"}
                                 },
                                 "required": ["output_types", "matrices"],
                                 "additionalProperties": false,
-                                "allOf": [{"$ref": "#/$defs/dependency-output-packages"}]
+                                "allOf": [
+                                    {"$ref": "#/$defs/dependency-output-packages"},
+                                    {"$ref": "#/$defs/dependency-output-filters"}
+                                ]
                             }
                         }
                     },
@@ -375,6 +383,34 @@
                     }
                 }
             ]
+        },
+        "filters": {
+            "type": "object",
+            "properties": {
+                "requirements_types": {
+                    "oneOf": [
+                        {"type": "string", "pattern": "^[^.]+(\\.[^.]+)*$"},
+                        {
+                            "type": "array",
+                            "items": {"type": "string", "pattern": "^[^.]+(\\.[^.]+)*$"}
+                        }
+                    ]
+                },
+                "recipe_dir": {
+                    "type": "string",
+                    "minLength": 1,
+                    "not": {"const": "!"}
+                }
+            },
+            "additionalProperties": false
+        },
+        "dependency-output-filters": {
+            "if": {"required": ["filters"]},
+            "then": {
+                "properties": {
+                    "output_types": {"enum": ["conda-recipe-v1", ["conda-recipe-v1"]]}
+                }
+            }
         },
         "dependency-output-packages": {
             "allOf": [

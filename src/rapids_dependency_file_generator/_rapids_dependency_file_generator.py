@@ -458,12 +458,14 @@ def make_dependency_files(
                     dependency_entry = parsed_config.dependencies[include]
 
                     for common_entry in dependency_entry.common:
-                        if file_type not in common_entry.output_types:
+                        if file_type not in common_entry.output_types or not common_entry.filters.matches(file_config):
                             continue
                         dependencies.extend(common_entry.packages)
 
                     for specific_entry in dependency_entry.specific:
-                        if file_type not in specific_entry.output_types:
+                        if file_type not in specific_entry.output_types or not specific_entry.filters.matches(
+                            file_config
+                        ):
                             continue
 
                         # Ensure that all specific matrices are unique

@@ -199,6 +199,7 @@ The `common` key contains a list of objects with the following keys:
 
 - `output_types` - a list of output types (e.g. "conda" for `environment.yaml` files or "requirements" for `requirements.txt` files) for the packages in the `packages` key
 - `packages` - a list of packages to be included in the generated output file
+- `filters` - optional recipe destination filters, described [below](#recipe-dependency-filters)
 
 #### `specific` Key
 
@@ -206,6 +207,49 @@ The `specific` key contains a list of objects with the following keys:
 
 - `output_types` - _same as `output_types` for the `common` key above_
 - `matrices` - a list of objects (described below) which define packages that are specific to a particular matrix combination
+- `filters` - optional recipe destination filters, evaluated before matrix matching and fallback selection
+
+##### Recipe Dependency Filters
+
+Dependency entries whose only output type is `conda-recipe-v1` can have a
+`filters` mapping alongside `output_types` and `packages` (for `common`) or
+`matrices` (for `specific`):
+
+```yaml
+dependencies:
+  depends_on_libcudf:
+    common:
+      - output_types: conda-recipe-v1
+        filters:
+          requirements_types: [host, run]
+          recipe_dir: conda/recipes/libcudf
+        packages:
+          - ${{ pin_subpackage("libcudf", exact=True) }}
+      - output_types: conda-recipe-v1
+        filters:
+          requirements_types: [host, run]
+          recipe_dir: "!conda/recipes/libcudf"
+        packages:
+          - libcudf =${{ version }}
+      - output_types: conda-recipe-v1
+        filters:
+          requirements_types: ignore_run_exports.by_name
+        packages:
+          - libcudf
+```
+
+`requirements_types` accepts a string or a list of strings. It matches the full,
+dot-separated `files.<key>.extras.requirements_type` exactly, including when
+`test_index` is set. `recipe_dir` matches `files.<key>.recipe_dir` using
+`pathlib.Path(a) == pathlib.Path(b)`, without resolving paths or expanding `~`.
+A leading `!` negates the directory comparison; quote this value to prevent YAML
+from treating it as a tag. The directory after `!` must be nonempty.
+
+All supplied filters must match. Omitted filters impose no restriction, and all
+matching entries contribute packages additively; entries do not act as `else`
+branches. A filtered-out `specific` entry is skipped without examining its
+matrices or requiring a matrix match. Filters use the file's destination
+metadata, so `--matrix` cannot override them.
 
 ##### `matrices` Key
 

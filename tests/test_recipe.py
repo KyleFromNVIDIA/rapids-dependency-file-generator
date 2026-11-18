@@ -381,3 +381,177 @@ def test_preserve_anchors(initial, packages):
     assert result.endswith("  host: *deps\n")
     assert yaml.safe_load(result)["requirements"] == {"build": packages, "host": packages}
     assert update_recipe(result, packages, extras, "dependencies.yaml") == result
+
+
+@pytest.mark.parametrize("section", ["common", "specific"])
+@pytest.mark.parametrize(
+    "filters, matches",
+    [
+        ({}, True),
+        ({"requirements_types": "build"}, True),
+        ({"requirements_types": ["build", "host"]}, True),
+        ({"requirements_types": "run"}, False),
+        ({"requirements_types": []}, False),
+        ({"recipe_dir": "./recipes/"}, True),
+        ({"recipe_dir": "recipes/../recipes"}, False),
+        ({"recipe_dir": "other"}, False),
+        ({"recipe_dir": "!./recipes/"}, False),
+        ({"recipe_dir": "!recipes/../recipes"}, True),
+        ({"recipe_dir": "!other"}, True),
+        ({"requirements_types": "build", "recipe_dir": "recipes"}, True),
+        ({"requirements_types": "build", "recipe_dir": "!recipes"}, False),
+        ({"requirements_types": "run", "recipe_dir": "recipes"}, False),
+    ],
+)
+def test_dependency_filters(tmp_path, section, filters, matches):
+    recipe = write_recipe(tmp_path, "requirements:\n  build: []\n")
+    config = recipe_config(tmp_path)
+    entry = {"output_types": "conda-recipe-v1", "filters": filters}
+    if section == "common":
+        entry["packages"] = ["selected"]
+    else:
+        entry["matrices"] = [{"matrix": {}, "packages": ["selected"]}]
+    config["dependencies"]["deps"] = {section: [entry]}
+    generate(config, tmp_path)
+    assert yaml.safe_load(recipe.read_text())["requirements"]["build"] == (["selected"] if matches else [])
+
+
+@pytest.mark.parametrize("requirements_type", ["host", "run", "ignore_run_exports.by_name"])
+@pytest.mark.parametrize("same_recipe", [False, True])
+def test_additive_filters_and_matrix_override(tmp_path, requirements_type, same_recipe):
+    recipe = write_recipe(tmp_path, "requirements:\n  host: []\n  run: []\n  ignore_run_exports:\n    by_name: []\n")
+    config = recipe_config(
+        tmp_path, extras={"output_type": "requirements", "requirements_type": requirements_type}
+    )
+    directory = "./recipes/" if same_recipe else "other"
+    config["dependencies"]["deps"]["common"] = [
+        {"output_types": "conda-recipe-v1", "packages": ["always"]},
+        {
+            "output_types": "conda-recipe-v1",
+            "filters": {"requirements_types": ["host", "run"], "recipe_dir": directory},
+            "packages": ['${{ pin_subpackage("libcudf", exact=True) }}'],
+        },
+        {
+            "output_types": "conda-recipe-v1",
+            "filters": {"requirements_types": ["host", "run"], "recipe_dir": "!" + directory},
+            "packages": ["libcudf =${{ version }}"],
+        },
+        {
+            "output_types": "conda-recipe-v1",
+            "filters": {"requirements_types": "ignore_run_exports.by_name"},
+            "packages": ["libcudf"],
+        },
+    ]
+    # CLI matrix values cannot override destination-based dependency selection.
+    generate(config, tmp_path, matrix={"requirements_type": ["build"], "recipe": ["unrelated"]})
+    requirements = yaml.safe_load(recipe.read_text())["requirements"]
+    actual = requirements
+    for part in requirements_type.split("."):
+        actual = actual[part]
+    if requirements_type == "ignore_run_exports.by_name":
+        selected = "libcudf"
+    elif same_recipe:
+        selected = '${{ pin_subpackage("libcudf", exact=True) }}'
+    else:
+        selected = "libcudf =${{ version }}"
+    assert actual == sorted(["always", selected])
+
+
+@pytest.mark.parametrize("requirements_type", ["run", "run_exports.strong"])
+def test_filter_full_requirements_path_and_tests(tmp_path, requirements_type):
+    recipe = write_recipe(tmp_path, RECIPE)
+    extras = {"output_type": "requirements", "requirements_type": requirements_type}
+    if requirements_type == "run":
+        extras["test_index"] = 0
+    config = recipe_config(tmp_path, extras=extras)
+    config["dependencies"]["deps"]["common"] = [
+        {"output_types": "conda-recipe-v1", "filters": {"requirements_types": path}, "packages": [package]}
+        for path, package in [("run", "runtime"), ("run_exports", "wrong-parent"), ("run_exports.strong", "export")]
+    ]
+    generate(config, tmp_path)
+    result = yaml.safe_load(recipe.read_text())
+    if requirements_type == "run":
+        assert result["tests"][0]["requirements"]["run"] == ["runtime"]
+    else:
+        assert result["requirements"]["run_exports"]["strong"] == ["export"]
+
+
+def test_specific_filters_before_matrix_matching(tmp_path):
+    recipe = write_recipe(tmp_path, "requirements:\n  build: []\n")
+    config = recipe_config(tmp_path)
+    config["dependencies"]["deps"]["specific"] = [
+        {
+            "output_types": "conda-recipe-v1",
+            "filters": {"requirements_types": "run"},
+            "matrices": [{"matrix": {"cuda": "13"}, "packages": ["excluded"]}],
+        },
+        {
+            "output_types": "conda-recipe-v1",
+            "filters": {"recipe_dir": "recipes"},
+            "matrices": [
+                {"matrix": {"cuda": "12*"}, "packages": ["cuda12"]},
+                {"matrix": {}, "packages": ["fallback"]},
+            ],
+        },
+    ]
+    generate(config, tmp_path, matrix={"cuda": ["12.0"]})
+    assert yaml.safe_load(recipe.read_text())["requirements"]["build"] == ["cuda12"]
+    generate(config, tmp_path, matrix={"cuda": ["11.0"]})
+    assert yaml.safe_load(recipe.read_text())["requirements"]["build"] == ["fallback"]
+    config["dependencies"]["deps"]["specific"][0]["filters"] = {"requirements_types": "build"}
+    with pytest.raises(ValueError, match="No matching matrix"):
+        generate(config, tmp_path, matrix={"cuda": ["11.0"]})
+
+
+@pytest.mark.parametrize("section", ["common", "specific"])
+@pytest.mark.parametrize(
+    "outputs, valid",
+    [
+        ("conda-recipe-v1", True),
+        (["conda-recipe-v1"], True),
+        ("conda", False),
+        ("requirements", False),
+        ("pyproject", False),
+        ("constraints", False),
+        ("none", False),
+        (["conda-recipe-v1", "conda"], False),
+    ],
+)
+def test_filter_output_validation(tmp_path, section, outputs, valid):
+    config = recipe_config(tmp_path)
+    entry = {"output_types": outputs, "filters": {"requirements_types": "build", "recipe_dir": "recipes"}}
+    entry.update({"packages": []} if section == "common" else {"matrices": [{"matrix": {}, "packages": []}]})
+    config["dependencies"]["deps"] = {section: [entry]}
+    if valid:
+        parsed = _config.parse_config(config, tmp_path / "dependencies.yaml")
+        filters = getattr(parsed.dependencies["deps"], section)[0].filters
+        assert filters.requirements_types == {"build"}
+        assert filters.recipe_dir == "recipes"
+    else:
+        with pytest.raises(RuntimeError, match="dependencies data is invalid"):
+            _config.parse_config(config, tmp_path / "dependencies.yaml")
+
+
+@pytest.mark.parametrize("section", ["common", "specific"])
+@pytest.mark.parametrize(
+    "filters",
+    [
+        None,
+        [],
+        {"unknown": "build"},
+        {"requirements_types": None},
+        {"requirements_types": 1},
+        {"requirements_types": ["build", 1]},
+        {"requirements_types": "run..strong"},
+        {"recipe_dir": []},
+        {"recipe_dir": ""},
+        {"recipe_dir": "!"},
+    ],
+)
+def test_invalid_dependency_filters(tmp_path, section, filters):
+    config = recipe_config(tmp_path)
+    entry = {"output_types": "conda-recipe-v1", "filters": filters}
+    entry.update({"packages": []} if section == "common" else {"matrices": [{"matrix": {}, "packages": []}]})
+    config["dependencies"]["deps"] = {section: [entry]}
+    with pytest.raises(RuntimeError, match="dependencies data is invalid"):
+        _config.parse_config(config, tmp_path / "dependencies.yaml")

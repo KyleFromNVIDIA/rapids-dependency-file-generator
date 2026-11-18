@@ -14,6 +14,7 @@ __all__ = [
     "FileExtras",
     "File",
     "PipRequirements",
+    "DependencyFilters",
     "CommonDependencies",
     "MatrixMatcher",
     "SpecificDependencies",
@@ -110,6 +111,31 @@ class PipRequirements:
 
 
 @dataclass
+class DependencyFilters:
+    """Destination filters for a recipe dependency entry."""
+
+    requirements_types: typing.Union[set[str], None] = None
+    """Exact requirements paths to include, or no restriction."""
+
+    recipe_dir: typing.Union[str, None] = None
+    """Recipe directory to match, optionally prefixed with ``!`` to negate."""
+
+    def matches(self, file: File) -> bool:
+        """Return whether all filters match the file's destination metadata."""
+        if self.requirements_types is not None:
+            if file.extras is None or file.extras.requirements_type not in self.requirements_types:
+                return False
+        if self.recipe_dir is not None:
+            if file.recipe_dir is None:
+                return False
+            negative = self.recipe_dir.startswith("!")
+            directory = self.recipe_dir[1:] if negative else self.recipe_dir
+            if (Path(directory) == file.recipe_dir) == negative:
+                return False
+        return True
+
+
+@dataclass
 class CommonDependencies:
     """A dependency entry in the ``common`` field of a dependency set."""
 
@@ -118,6 +144,9 @@ class CommonDependencies:
 
     packages: list[typing.Union[str, PipRequirements, dict[str, typing.Any]]]
     """The list of packages for this entry."""
+
+    filters: DependencyFilters = field(default_factory=DependencyFilters)
+    """Optional filters on the recipe destination."""
 
 
 @dataclass
@@ -140,6 +169,9 @@ class SpecificDependencies:
 
     matrices: list[MatrixMatcher]
     """The list of matrix matchers for this entry."""
+
+    filters: DependencyFilters = field(default_factory=DependencyFilters)
+    """Optional destination filters evaluated before matrix matching."""
 
 
 @dataclass
@@ -224,18 +256,30 @@ def _parse_requirement(
     return PipRequirements(pip=requirement["pip"])
 
 
+def _parse_filters(filters: dict[str, typing.Any]) -> DependencyFilters:
+    requirements_types = filters.get("requirements_types")
+    if isinstance(requirements_types, str):
+        requirements_types = [requirements_types]
+    return DependencyFilters(
+        requirements_types=set(requirements_types) if requirements_types is not None else None,
+        recipe_dir=filters.get("recipe_dir"),
+    )
+
+
 def _parse_dependencies(dependencies: dict[str, typing.Any]) -> Dependencies:
     return Dependencies(
         common=[
             CommonDependencies(
                 output_types=_parse_outputs(d["output_types"]),
                 packages=[_parse_requirement(p) for p in d["packages"]],
+                filters=_parse_filters(d.get("filters", {})),
             )
             for d in dependencies.get("common", [])
         ],
         specific=[
             SpecificDependencies(
                 output_types=_parse_outputs(d["output_types"]),
+                filters=_parse_filters(d.get("filters", {})),
                 matrices=[
                     MatrixMatcher(
                         matrix=dict(m.get("matrix", {}) or {}),
